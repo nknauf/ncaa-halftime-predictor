@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Data artifacts (keep the folder, ignore the db)
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
+
+# Notebooks
+.ipynb_checkpoints/
+
+# SQLite
+*.db
+
+# Secrets
+.env
