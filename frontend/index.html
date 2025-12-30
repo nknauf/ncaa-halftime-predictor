@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>NCAA Halftime Predictor</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background: #f9f9f9;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: white;
+    }
+    th, td {
+      padding: 10px;
+      border-bottom: 1px solid #ddd;
+      text-align: center;
+    }
+    th {
+      background: #222;
+      color: white;
+    }
+    .high { color: green; font-weight: bold; }
+    .medium { color: orange; font-weight: bold; }
+    .low { color: gray; }
+  </style>
+</head>
+<body>
+
+<h1>🏀 NCAA Halftime Predictions</h1>
+<p>Live predictions updated automatically.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Game</th>
+      <th>Halftime</th>
+      <th>Home Win %</th>
+      <th>Confidence</th>
+    </tr>
+  </thead>
+  <tbody id="predictions">
+    <tr><td colspan="4">Loading...</td></tr>
+  </tbody>
+</table>
+
+<script>
+async function loadPredictions() {
+  try {
+    const res = await fetch('/predictions/today');
+    const data = await res.json();
+
+    const tbody = document.getElementById('predictions');
+    tbody.innerHTML = '';
+
+    if (data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4">No halftime games yet.</td></tr>';
+      return;
+    }
+
+    for (const p of data) {
+      const row = document.createElement('tr');
+
+      row.innerHTML = `
+        <td>${p.away_name} @ ${p.home_name}</td>
+        <td>${p.away_halftime}-${p.home_halftime}</td>
+        <td>${(p.predicted_home_win_prob * 100).toFixed(1)}%</td>
+        <td class="${p.confidence >= 0.2 ? 'high' : p.confidence >= 0.1 ? 'medium' : 'low'}">
+          ${p.confidence.toFixed(3)}
+        </td>
+      `;
+
+      tbody.appendChild(row);
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+loadPredictions();
+setInterval(loadPredictions, 60000); // refresh every 60s
+</script>
+
+</body>
+</html>
