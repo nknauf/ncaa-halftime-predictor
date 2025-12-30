@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Today's Predictions{% endblock %}
+
+{% block content %}
+<h2>Halftime Predictions</h2>
+
+<table>
+<tr>
+    <th>Game</th>
+    <th>Halftime</th>
+    <th>Home Win %</th>
+    <th>Confidence</th>
+</tr>
+
+{% for p in predictions %}
+<tr>
+    <td>{{ p.away_team }} @ {{ p.home_team }}</td>
+    <td>{{ p.away_halftime }} - {{ p.home_halftime }}</td>
+    <td>{{ "%.1f"|format(p.predicted_home_win_prob * 100) }}%</td>
+    <td>{{ p.confidence_bucket }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

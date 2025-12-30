@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Prediction History{% endblock %}
+
+{% block content %}
+<h2>Prediction Results</h2>
+
+<table>
+<tr>
+    <th>Date</th>
+    <th>Game</th>
+    <th>Prediction</th>
+    <th>Final</th>
+    <th>Correct</th>
+</tr>
+
+{% for p in history %}
+<tr>
+    <td>{{ p.date }}</td>
+    <td>{{ p.away_team }} @ {{ p.home_team }}</td>
+    <td>{{ "%.1f"|format(p.predicted_home_win_prob * 100) }}%</td>
+    <td>{{ p.final_away_score }} - {{ p.final_home_score }}</td>
+    <td>{{ "✔" if p.prediction_correct else "✘" }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

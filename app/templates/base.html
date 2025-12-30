@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}NCAA Halftime Predictor{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header>
+    <h1>NCAA Halftime Predictor</h1>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/games/today">Games</a>
+        <a href="/predictions/today">Predictions</a>
+        <a href="/predictions/history">History</a>
+    </nav>
+    <hr>
+</header>
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+</body>
+</html>

@@ -40,7 +40,10 @@ def main():
     try:
         ensure_live_schema(conn)    # makes SQLite tables for live games and predictions
 
-        conn.execute("DELETE FROM daily_games;")    # Deletes previous daily_games, wants only current list
+        conn.execute(
+            "DELETE FROM daily_games WHERE date != ?;",
+            (date_for_db,)
+        )
         conn.commit()
 
         print(f"Using DB: {db_path.resolve()}")
