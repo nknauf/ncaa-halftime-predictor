@@ -14,7 +14,7 @@ def predictions_today():
     rows = conn.execute("""
         SELECT *
         FROM predictions
-        WHERE date(game_date_utc) = date('now')
+        WHERE date(created_at_utc) = date('now')
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
