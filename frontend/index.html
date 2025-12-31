@@ -4,45 +4,61 @@
   <meta charset="UTF-8" />
   <title>NCAA Halftime Predictor</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 40px;
-      background: #f9f9f9;
-    }
-    h1 {
-      margin-bottom: 10px;
-    }
-    table {
-      border-collapse: collapse;
-      width: 100%;
+    body { font-family: Arial, sans-serif; margin: 40px; background: #f9f9f9; }
+    h1 { margin-bottom: 6px; }
+    .sub { margin-top: 0; color: #555; }
+
+    .cards { display: flex; gap: 14px; margin: 18px 0; flex-wrap: wrap; }
+    .card {
       background: white;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-width: 240px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
     }
-    th, td {
-      padding: 10px;
-      border-bottom: 1px solid #ddd;
-      text-align: center;
-    }
-    th {
-      background: #222;
-      color: white;
-    }
+    .card .label { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
+    .card .value { font-size: 20px; margin-top: 6px; }
+    .muted { color: #777; font-size: 12px; margin-top: 6px; }
+
+    table { border-collapse: collapse; width: 100%; background: white; }
+    th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: center; }
+    th { background: #222; color: white; }
+
     .high { color: green; font-weight: bold; }
     .medium { color: orange; font-weight: bold; }
     .low { color: gray; }
+
+    .win { color: green; font-weight: bold; }
+    .loss { color: #c62828; font-weight: bold; }
+    .pending { color: #666; }
   </style>
 </head>
 <body>
 
 <h1>🏀 NCAA Halftime Predictions</h1>
-<p>Live predictions updated automatically.</p>
+<p class="sub">Live predictions updated automatically.</p>
+
+<div class="cards">
+  <div class="card" id="overallCard">
+    <div class="label">Overall</div>
+    <div class="value">Loading…</div>
+    <div class="muted"></div>
+  </div>
+  <div class="card" id="todayCard">
+    <div class="label">Today</div>
+    <div class="value">Loading…</div>
+    <div class="muted"></div>
+  </div>
+</div>
 
 <table>
   <thead>
     <tr>
       <th>Game</th>
-      <th>Halftime</th>
       <th>Home Win %</th>
       <th>Confidence</th>
+      <th>Result</th>
     </tr>
   </thead>
   <tbody id="predictions">
@@ -51,40 +67,87 @@
 </table>
 
 <script>
+function fmtRecord(m) {
+  const decided = m.decided ?? (m.wins + m.losses);
+  const acc = (m.accuracy === null || m.accuracy === undefined) ? null : (m.accuracy * 100).toFixed(1) + '%';
+  const rec = `${m.wins}–${m.losses}`;
+  const pending = m.pending ? ` | Pending: ${m.pending}` : '';
+  const accText = acc ? `Accuracy: ${acc}` : 'Accuracy: —';
+  return { rec, accText, pending, decided };
+}
+
+async function loadMetricCard(url, elId) {
+  const card = document.getElementById(elId);
+  const valueEl = card.querySelector('.value');
+  const mutedEl = card.querySelector('.muted');
+
+  try {
+    const res = await fetch(url);
+    const m = await res.json();
+
+    const { rec, accText, pending } = fmtRecord(m);
+    valueEl.textContent = rec;
+    mutedEl.textContent = `${accText}${pending}`;
+  } catch (e) {
+    valueEl.textContent = 'Error';
+    mutedEl.textContent = 'Could not load metrics.';
+    console.error(e);
+  }
+}
+
 async function loadPredictions() {
+  const tbody = document.getElementById('predictions');
+
   try {
     const res = await fetch('/predictions/today');
     const data = await res.json();
 
-    const tbody = document.getElementById('predictions');
     tbody.innerHTML = '';
 
-    if (data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4">No halftime games yet.</td></tr>';
+    if (!Array.isArray(data) || data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4">No games yet today.</td></tr>';
       return;
     }
 
     for (const p of data) {
+      let explanation = {};
+      try {
+        explanation = JSON.parse(p.explanation_json || "{}");
+      } catch {}
+
+      const away = explanation.away_team || "Unknown Away";
+      const home = explanation.home_team || "Unknown Home";
+
+      let resultText = '⏳ Pending';
+      let resultClass = 'pending';
+      if (p.prediction_correct === 1) { resultText = '✅ Win'; resultClass = 'win'; }
+      else if (p.prediction_correct === 0) { resultText = '❌ Loss'; resultClass = 'loss'; }
+
+      const confClass = (p.confidence >= 0.2) ? 'high' : (p.confidence >= 0.1) ? 'medium' : 'low';
+
       const row = document.createElement('tr');
-
       row.innerHTML = `
-        <td>${p.away_name} @ ${p.home_name}</td>
-        <td>${p.away_halftime}-${p.home_halftime}</td>
+        <td>${away} @ ${home}</td>
         <td>${(p.predicted_home_win_prob * 100).toFixed(1)}%</td>
-        <td class="${p.confidence >= 0.2 ? 'high' : p.confidence >= 0.1 ? 'medium' : 'low'}">
-          ${p.confidence.toFixed(3)}
-        </td>
+        <td class="${confClass}">${Number(p.confidence || 0).toFixed(3)}</td>
+        <td class="${resultClass}">${resultText}</td>
       `;
-
       tbody.appendChild(row);
     }
   } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="4">Error loading predictions.</td></tr>';
     console.error(err);
   }
 }
 
-loadPredictions();
-setInterval(loadPredictions, 60000); // refresh every 60s
+async function refreshAll() {
+  await loadMetricCard('/metrics/overall', 'overallCard');
+  await loadMetricCard('/metrics/today', 'todayCard');
+  await loadPredictions();
+}
+
+refreshAll();
+setInterval(refreshAll, 60000);
 </script>
 
 </body>
