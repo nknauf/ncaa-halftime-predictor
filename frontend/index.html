@@ -3,9 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <title>NCAA Halftime Predictor</title>
+
   <style>
     body { font-family: Arial, sans-serif; margin: 40px; background: #f9f9f9; }
     h1 { margin-bottom: 6px; }
+    h2 { margin-top: 40px; }
     .sub { margin-top: 0; color: #555; }
 
     .cards { display: flex; gap: 14px; margin: 18px 0; flex-wrap: wrap; }
@@ -17,11 +19,11 @@
       min-width: 240px;
       box-shadow: 0 1px 2px rgba(0,0,0,0.04);
     }
-    .card .label { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
-    .card .value { font-size: 20px; margin-top: 6px; }
+    .card .label { color: #666; font-size: 12px; text-transform: uppercase; }
+    .card .value { font-size: 22px; margin-top: 6px; }
     .muted { color: #777; font-size: 12px; margin-top: 6px; }
 
-    table { border-collapse: collapse; width: 100%; background: white; }
+    table { border-collapse: collapse; width: 100%; background: white; margin-top: 10px; }
     th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: center; }
     th { background: #222; color: white; }
 
@@ -34,116 +36,170 @@
     .pending { color: #666; }
   </style>
 </head>
+
 <body>
 
-<h1>🏀 NCAA Halftime Predictions</h1>
-<p class="sub">Live predictions updated automatically.</p>
+<h1>🏀 NCAA Halftime Prediction Analysis</h1>
+<p class="sub">Live model output & historical performance</p>
 
+<!-- ========================= -->
+<!-- Overall Metrics -->
+<!-- ========================= -->
 <div class="cards">
   <div class="card" id="overallCard">
-    <div class="label">Overall</div>
-    <div class="value">Loading…</div>
-    <div class="muted"></div>
-  </div>
-  <div class="card" id="todayCard">
-    <div class="label">Today</div>
+    <div class="label">Overall Record</div>
     <div class="value">Loading…</div>
     <div class="muted"></div>
   </div>
 </div>
 
-<table>
+<!-- ========================= -->
+<!-- Live Games -->
+<!-- ========================= -->
+<h2>Live & In-Progress Games</h2>
+<table id="live-games">
   <thead>
     <tr>
       <th>Game</th>
+      <th>Score</th>
+      <th>Status</th>
       <th>Home Win %</th>
       <th>Confidence</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td colspan="5">Loading…</td></tr>
+  </tbody>
+</table>
+
+<!-- ========================= -->
+<!-- Recent Completed -->
+<!-- ========================= -->
+<h2 id="recent-title">Most Recent Completed Games</h2>
+<table id="recent-games">
+  <thead>
+    <tr>
+      <th>Game</th>
+      <th>Final</th>
+      <th>Prediction</th>
       <th>Result</th>
     </tr>
   </thead>
-  <tbody id="predictions">
-    <tr><td colspan="4">Loading...</td></tr>
+  <tbody>
+    <tr><td colspan="4">Loading…</td></tr>
   </tbody>
 </table>
 
 <script>
-function fmtRecord(m) {
-  const decided = m.decided ?? (m.wins + m.losses);
-  const acc = (m.accuracy === null || m.accuracy === undefined) ? null : (m.accuracy * 100).toFixed(1) + '%';
-  const rec = `${m.wins}–${m.losses}`;
-  const pending = m.pending ? ` | Pending: ${m.pending}` : '';
-  const accText = acc ? `Accuracy: ${acc}` : 'Accuracy: —';
-  return { rec, accText, pending, decided };
-}
-
-async function loadMetricCard(url, elId) {
-  const card = document.getElementById(elId);
-  const valueEl = card.querySelector('.value');
-  const mutedEl = card.querySelector('.muted');
+/* ---------------------------
+   Metrics
+--------------------------- */
+async function loadOverallMetrics() {
+  const card = document.getElementById("overallCard");
+  const value = card.querySelector(".value");
+  const muted = card.querySelector(".muted");
 
   try {
-    const res = await fetch(url);
+    const res = await fetch("/metrics/overall");
     const m = await res.json();
 
-    const { rec, accText, pending } = fmtRecord(m);
-    valueEl.textContent = rec;
-    mutedEl.textContent = `${accText}${pending}`;
-  } catch (e) {
-    valueEl.textContent = 'Error';
-    mutedEl.textContent = 'Could not load metrics.';
-    console.error(e);
+    value.textContent = `${m.wins}–${m.losses}`;
+    muted.textContent = m.accuracy !== null
+      ? `Accuracy: ${(m.accuracy * 100).toFixed(1)}%`
+      : "Accuracy: —";
+  } catch {
+    value.textContent = "Error";
+    muted.textContent = "";
   }
 }
 
-async function loadPredictions() {
-  const tbody = document.getElementById('predictions');
+/* ---------------------------
+   Live Games
+--------------------------- */
+async function loadLiveGames() {
+  const tbody = document.querySelector("#live-games tbody");
+  tbody.innerHTML = "";
 
-  try {
-    const res = await fetch('/predictions/today');
-    const data = await res.json();
+  const res = await fetch("/games/live");
+  const games = await res.json();
 
-    tbody.innerHTML = '';
+  if (games.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5">No games currently live.</td></tr>`;
+    return;
+  }
 
-    if (!Array.isArray(data) || data.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4">No games yet today.</td></tr>';
-      return;
-    }
+  for (const g of games) {
+    const confClass =
+      g.confidence >= 0.2 ? "high" :
+      g.confidence >= 0.1 ? "medium" : "low";
 
-    for (const p of data) {
-      let explanation = {};
-      try {
-        explanation = JSON.parse(p.explanation_json || "{}");
-      } catch {}
-
-      const away = explanation.away_team || "Unknown Away";
-      const home = explanation.home_team || "Unknown Home";
-
-      let resultText = '⏳ Pending';
-      let resultClass = 'pending';
-      if (p.prediction_correct === 1) { resultText = '✅ Win'; resultClass = 'win'; }
-      else if (p.prediction_correct === 0) { resultText = '❌ Loss'; resultClass = 'loss'; }
-
-      const confClass = (p.confidence >= 0.2) ? 'high' : (p.confidence >= 0.1) ? 'medium' : 'low';
-
-      const row = document.createElement('tr');
-      row.innerHTML = `
-        <td>${away} @ ${home}</td>
-        <td>${(p.predicted_home_win_prob * 100).toFixed(1)}%</td>
-        <td class="${confClass}">${Number(p.confidence || 0).toFixed(3)}</td>
-        <td class="${resultClass}">${resultText}</td>
-      `;
-      tbody.appendChild(row);
-    }
-  } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="4">Error loading predictions.</td></tr>';
-    console.error(err);
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${g.away_name} @ ${g.home_name}</td>
+      <td>${g.away_score ?? "-"} – ${g.home_score ?? "-"}</td>
+      <td>${g.status}</td>
+      <td>${g.predicted_home_win_prob !== null ? (g.predicted_home_win_prob * 100).toFixed(1) + "%" : "—"}</td>
+      <td class="${confClass}">${g.confidence !== null ? g.confidence.toFixed(3) : "—"}</td>
+    `;
+    tbody.appendChild(row);
   }
 }
 
+/* ---------------------------
+   Recent Completed
+--------------------------- */
+async function loadRecentGames() {
+  const title = document.getElementById("recent-title");
+  const tbody = document.querySelector("#recent-games tbody");
+  tbody.innerHTML = "";
+
+  const res = await fetch("/games/recent");
+  const data = await res.json();
+
+  if (!data.games || data.games.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4">No completed games yet.</td></tr>`;
+    return;
+  }
+
+  title.textContent = `Most Recent Completed Games (${data.sports_day})`;
+
+  for (const g of data.games) {
+    let resultText = "⏳ Pending";
+    let resultClass = "pending";
+    if (g.prediction_correct === 1) { resultText = "✅ Win"; resultClass = "win"; }
+    if (g.prediction_correct === 0) { resultText = "❌ Loss"; resultClass = "loss"; }
+
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${g.away_name} @ ${g.home_name}</td>
+      <td>${g.away_score} – ${g.home_score}</td>
+      <td>${(g.predicted_home_win_prob * 100).toFixed(1)}%</td>
+      <td class="${resultClass}">${resultText}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+async function loadConfidenceBreakdown() {
+  const res = await fetch("/metrics/confidence");
+  const data = await res.json();
+
+  for (const b of data) {
+    const acc = b.wins + b.losses > 0
+      ? (b.wins / (b.wins + b.losses) * 100).toFixed(1)
+      : "—";
+
+    console.log(`${b.confidence_bucket}: ${acc}%`);
+  }
+}
+
+/* ---------------------------
+   Boot
+--------------------------- */
 async function refreshAll() {
-  await loadMetricCard('/metrics/overall', 'overallCard');
-  await loadMetricCard('/metrics/today', 'todayCard');
-  await loadPredictions();
+  await loadOverallMetrics();
+  await loadLiveGames();
+  await loadRecentGames();
 }
 
 refreshAll();

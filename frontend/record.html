@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>NCAA Halftime Predictor – Season Record</title>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; background: #f9f9f9; }
+    h1 { margin-bottom: 6px; }
+    .sub { margin-top: 0; color: #555; }
+
+    .card {
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 16px;
+      max-width: 320px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+
+    table { border-collapse: collapse; width: 100%; background: white; }
+    th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: center; }
+    th { background: #222; color: white; }
+
+    .win { color: green; font-weight: bold; }
+    .loss { color: #c62828; font-weight: bold; }
+    .pending { color: #666; }
+  </style>
+</head>
+
+<body>
+
+<h1>Season Record</h1>
+<p class="sub">All halftime predictions for the season</p>
+
+<div class="card" id="summary">
+  Loading…
+</div>
+
+<table id="season-games">
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Game</th>
+      <th>Predicted</th>
+      <th>Final</th>
+      <th>Result</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td colspan="5">Loading…</td></tr>
+  </tbody>
+</table>
+
+<script>
+const SEASON_YEAR = 2025;
+
+async function loadSeason() {
+  const summary = document.getElementById("summary");
+  const tbody = document.querySelector("#season-games tbody");
+
+  const res = await fetch(`/games/season/${SEASON_YEAR}`);
+  const data = await res.json();
+
+  summary.textContent =
+    `${data.summary.wins}–${data.summary.losses} ` +
+    `(Accuracy: ${data.summary.accuracy !== null ? (data.summary.accuracy * 100).toFixed(1) + "%" : "—"})`;
+
+  tbody.innerHTML = "";
+
+  for (const g of data.games) {
+    let cls = "pending";
+    let txt = "⏳";
+    if (g.prediction_correct === 1) { cls = "win"; txt = "✅"; }
+    if (g.prediction_correct === 0) { cls = "loss"; txt = "❌"; }
+
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${g.date}</td>
+      <td>${g.game_live_id}</td>
+      <td>${(g.predicted_home_win_prob * 100).toFixed(1)}%</td>
+      <td>${g.final_away_score} – ${g.final_home_score}</td>
+      <td class="${cls}">${txt}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+let offset = 0;
+const LIMIT = 50;
+
+async function loadMore() {
+  const res = await fetch(`/games/season/${SEASON_YEAR}?limit=${LIMIT}&offset=${offset}`);
+  const data = await res.json();
+
+  offset += LIMIT;
+  appendRows(data.games);
+}
+
+loadSeason();
+</script>
+
+<button onclick="loadMore()">Load More</button>
+
+</body>
+</html>

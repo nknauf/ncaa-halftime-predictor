@@ -38,6 +38,26 @@ def handle_halftime(conn: sqlite3.Connection, game: LiveGame, season_year: int):
     game_id = game.game_live_id
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # ---------------------------------------------------------
+    # Resolve season_id from season_year
+    # ---------------------------------------------------------
+    cursor.execute(
+        "SELECT season_id FROM seasons WHERE year = ?;",
+        (season_year,)
+    )
+    row = cursor.fetchone()
+
+    if row:
+        season_id = row[0]
+    else:
+        cursor.execute(
+            "INSERT INTO seasons (year) VALUES (?);",
+            (season_year,)
+        )
+        season_id = cursor.lastrowid
+        conn.commit()
+
+
     # Idempotency check
     cursor.execute(
         """
@@ -186,23 +206,59 @@ def handle_halftime(conn: sqlite3.Connection, game: LiveGame, season_year: int):
         "away_team": game.away_name,
     }
 
+
+    # add current game into the "games" SQL table
+    cursor.execute(
+        """
+        INSERT INTO games (
+            season_id,
+            game_live_id,
+            date,
+            home_team_id,
+            away_team_id
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(game_live_id) DO NOTHING;
+        """, (
+            season_id,
+            game_id,
+            game.date,
+            home_team_id,
+            away_team_id
+        ),
+    )
+    conn.commit()
+
+    # after inserting into "games", fetch game_id
+    cursor.execute(
+        "SELECT game_id FROM games WHERE game_live_id = ?",
+        (game_id,)
+    )
+    game_pk = cursor.fetchone()[0]
+
+
     # 6. Persist prediction
     cursor.execute(
         """
         INSERT INTO predictions (
             game_live_id,
+            game_id,
             season_year,
+            season_id,
             predicted_home_win_prob,
             predicted_home_final_margin,
             confidence,
             created_at_utc,
             explanation_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_live_id) DO NOTHING;
         """,
         (
             game_id,
+            game_pk,
             season_year,
+            season_id,
             baseline_prob,
             halftime_margin,  # placeholder until margin model
             margin_confidence_score,

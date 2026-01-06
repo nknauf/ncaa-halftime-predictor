@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Game Detail</title>
+  <style>
+    body { font-family: Arial; margin: 40px; background: #f9f9f9; }
+    .card { background: white; padding: 16px; border-radius: 8px; margin-bottom: 20px; }
+    .label { color: #666; font-size: 12px; text-transform: uppercase; }
+    .value { font-size: 20px; margin-top: 4px; }
+    .win { color: green; }
+    .loss { color: red; }
+  </style>
+</head>
+
+<body>
+
+<h1>Game Detail</h1>
+
+<div class="card" id="summary">Loading…</div>
+<div class="card" id="prediction"></div>
+<div class="card" id="explanation"></div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const gameId = params.get("game_id");
+
+async function loadGame() {
+  const res = await fetch(`/games/${gameId}`);
+  const g = await res.json();
+
+  document.getElementById("summary").innerHTML = `
+    <div class="label">Game</div>
+    <div class="value">${g.away_name} @ ${g.home_name}</div>
+    <div>Status: ${g.status}</div>
+    <div>Final: ${g.final_away_score} – ${g.final_home_score}</div>
+  `;
+
+  document.getElementById("prediction").innerHTML = `
+    <div class="label">Prediction</div>
+    <div class="value">${(g.predicted_home_win_prob * 100).toFixed(1)}% Home Win</div>
+    <div>Confidence: ${g.confidence.toFixed(3)} (${g.confidence_bucket})</div>
+    <div class="${g.prediction_correct === 1 ? "win" : "loss"}">
+      Result: ${g.prediction_correct === 1 ? "Correct" : "Incorrect"}
+    </div>
+  `;
+
+  document.getElementById("explanation").innerHTML = `
+    <div class="label">Model Explanation</div>
+    <pre>${JSON.stringify(JSON.parse(g.explanation_json), null, 2)}</pre>
+  `;
+}
+
+loadGame();
+</script>
+
+</body>
+</html>

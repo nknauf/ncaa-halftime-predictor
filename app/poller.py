@@ -40,11 +40,13 @@ def main():
     try:
         ensure_live_schema(conn)    # makes SQLite tables for live games and predictions
 
-        conn.execute(
-            "DELETE FROM daily_games WHERE date != ?;",
-            (date_for_db,)
-        )
-        conn.commit()
+
+        # Not deleteing daily games for the moment
+        # conn.execute(
+        #     "DELETE FROM daily_games WHERE date != ?;",
+        #     (date_for_db,)
+        # )
+        # conn.commit()
 
         print(f"Using DB: {db_path.resolve()}")
         print(f"Polling ESPN for date={date_param} every {args.interval}s (season={args.season})")
