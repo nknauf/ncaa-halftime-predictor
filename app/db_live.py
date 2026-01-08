@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 import json
-from team_mapping_static import get_sports_reference_name
+from app.team_mapping_static import get_sports_reference_name
 
 
 @dataclass
