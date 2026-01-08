@@ -17,105 +17,62 @@ from app.messaging import (
 )
 from app.config import CONFIG
 
+SHOULD_NOTIFY_THRESHOLD = 0.10  # only MEDIUM+
+
 
 def handle_halftime(conn: sqlite3.Connection, game: LiveGame, season_year: int):
     """
     Handles a game that has JUST reached halftime.
 
-    game: LiveGame:
-        {
-            "game_live_id": str,
-            "date": str,
-            "season_year": int,
-            "home_name": str,
-            "away_name": str,
-            "home_score": int,
-            "away_score": int,
-        }
+    Assumptions:
+    - season_games row already exists (created by poller)
+    - season_id already resolved in poller
     """
 
     cursor = conn.cursor()
-    game_id = game.game_live_id
-    now_iso = datetime.now(timezone.utc).isoformat()
+    game_live_id = game.game_live_id
+    now_utc = datetime.now(timezone.utc).isoformat()
 
-    # ---------------------------------------------------------
-    # Resolve season_id from season_year
-    # ---------------------------------------------------------
     cursor.execute(
         "SELECT season_id FROM seasons WHERE year = ?;",
         (season_year,)
     )
     row = cursor.fetchone()
 
-    if row:
-        season_id = row[0]
-    else:
-        cursor.execute(
-            "INSERT INTO seasons (year) VALUES (?);",
-            (season_year,)
-        )
-        season_id = cursor.lastrowid
-        conn.commit()
+    if not row:
+        raise RuntimeError(f"Season {season_year} missing — poller should create it")
 
+    season_id = row["season_id"]
 
-    # Idempotency check
+    # Resolve season_games.game_id (CRITICAL)
     cursor.execute(
         """
-        SELECT 1
-        FROM halftime_events
-        WHERE game_live_id = ?;
+        SELECT game_id
+        FROM season_games
+        WHERE game_live_id = ? AND season_id = ?;
         """,
-        (game_id,),
+        (game_live_id, season_id),
     )
-    if cursor.fetchone():
-        return  # already processed
+    row = cursor.fetchone()
 
-
-    # 2. Persist halftime event
-    cursor.execute(
-        """
-        INSERT INTO halftime_events (
-            game_live_id,
-            date,
-            season_year,
-            home_halftime,
-            away_halftime,
-            captured_at_utc
+    if not row:
+        raise RuntimeError(
+            f"season_games row missing for {game_live_id} (poller bug)"
         )
-        VALUES (?, ?, ?, ?, ?, ?);
-        """,
-        (
-            game_id,
-            game.date,
-            season_year,
-            game.home_score,
-            game.away_score,
-            now_iso,
-        ),
-    )
-    conn.commit()
 
+    season_game_id = int(row["game_id"])
+
+
+    # Resolve team IDs (canonical mapping)
     try:
         home_team_id = get_sports_reference_name(game.home_name)
         away_team_id = get_sports_reference_name(game.away_name)
-    except KeyError as e:
-        print("============================================================")
-        print("[STATIC ALIAS MISSING]")
-        print(f"game_id: {game_id}")
-        print(f"away ESPN name: {game.away_name}")
-        print(f"home ESPN name: {game.home_name}")
-        print("ACTION: add mapping to team_mapping_static.py")
-        print("============================================================")
-
-        cursor.execute(
-            """
-            UPDATE halftime_events
-            SET home_team_id = ?, away_team_id = ?
-            WHERE game_live_id = ?;
-            """,
-            (None, None, game_id),
-        )
-        conn.commit()
+    except KeyError:
+        print("=================================================")
+        print("[TEAM ALIAS MISSING]")
+        print(f"{game.away_name} @ {game.home_name}")
+        print("Add mapping to team_mapping_static.py")
+        print("=================================================")
         return
 
     stats = None
@@ -126,79 +83,42 @@ def handle_halftime(conn: sqlite3.Connection, game: LiveGame, season_year: int):
             headers=HEADERS,
         )
         stats = extract_first_half_team_stats(summary)
-
-        cursor.execute(
-            """
-            UPDATE halftime_events
-            SET halftime_stats_json = ?
-            WHERE game_live_id = ?;
-            """,
-            (json.dumps(stats), game_id),
-        )
-        conn.commit()
-
     except Exception as e:
-        print(f"[WARN] Failed to fetch halftime stats for {game_id}: {e}")
+        print(f"[WARN] Could not fetch halftime stats: {e}")
 
     # Validate scores
-    if game.home_score is not None and game.away_score is not None:
-        halftime_margin = game.home_score - game.away_score
-    else:
+    if game.home_score is None or game.away_score is None:
         return
+
+    halftime_margin = game.home_score - game.away_score
 
     # Baseline probability lookup
     baseline_prob, baseline_weight = lookup_baseline_prob(halftime_margin)
 
     if stats is not None:
-        margin_confidence_score = compute_confidence_with_stats(
+        confidence = compute_confidence_with_stats(
             p_baseline=baseline_prob,
             baseline_weight=baseline_weight,
             halftime_margin=halftime_margin,
             stats_home=stats["home"],
             stats_away=stats["away"]
         )
-        confidence_source = "baseline+stats"
-    else: # Fallback: baseline-only confidence from halftime margin
-        margin_confidence_score = abs(baseline_prob - 0.5) * baseline_weight
-        confidence_source = "baseline_only"
-
-    if margin_confidence_score >= 0.20:
-        margin_confidence = "HIGH"
-    elif margin_confidence_score >= 0.10:
-        margin_confidence = "MEDIUM"
+        source = "baseline+stats"
     else:
-        margin_confidence = "LOW"
+        confidence = abs(baseline_prob - 0.5) * baseline_weight
+        source = "baseline_only"
 
-    SHOULD_NOTIFY_THRESHOLD = 0.10  # only MEDIUM+
+    if confidence >= 0.20:
+        bucket = "HIGH"
+    elif confidence >= 0.10:
+        bucket = "MEDIUM"
+    else:
+        bucket = "LOW"
 
-    msg = build_halftime_message(
-    away_name=game.away_name,
-    home_name=game.home_name,
-    away_score=game.away_score,
-    home_score=game.home_score,
-    p_home=baseline_prob,
-    confidence_score=margin_confidence_score,
-    confidence_bucket=margin_confidence,
-    extra={
-        "halftime_margin": halftime_margin,
-        },
-    )
-
-    triggered = notify_if_confident(
-        conn=conn,
-        alert_cfg=alert_config_from_env(),
-        confidence_score=margin_confidence_score,
-        threshold=SHOULD_NOTIFY_THRESHOLD,
-        message=msg,
-        metadata={
-            "game_id": game.game_live_id,
-            "season_year": season_year,
-        },
-    )
 
     # create json explanation
-    json_explanation = {
-        "source": confidence_source,
+    explanation = {
+        "source": source,
         "halftime_margin": halftime_margin,
         "baseline_prob": baseline_prob,
         "stats_available": stats is not None,
@@ -206,65 +126,67 @@ def handle_halftime(conn: sqlite3.Connection, game: LiveGame, season_year: int):
         "away_team": game.away_name,
     }
 
-
-    # add current game into the "games" SQL table
     cursor.execute(
-        """
-        INSERT INTO games (
-            season_id,
-            game_live_id,
-            date,
-            home_team_id,
-            away_team_id
-        )
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(game_live_id) DO NOTHING;
-        """, (
-            season_id,
-            game_id,
-            game.date,
-            home_team_id,
-            away_team_id
-        ),
+        "SELECT 1 FROM predictions WHERE game_id = ?;",
+        (season_game_id,)
     )
-    conn.commit()
+    if cursor.fetchone():
+        return
 
-    # after inserting into "games", fetch game_id
-    cursor.execute(
-        "SELECT game_id FROM games WHERE game_live_id = ?",
-        (game_id,)
-    )
-    game_pk = cursor.fetchone()[0]
-
-
-    # 6. Persist prediction
+    # Insert into predictions table
     cursor.execute(
         """
         INSERT INTO predictions (
-            game_live_id,
             game_id,
+            game_live_id,
             season_year,
             season_id,
             predicted_home_win_prob,
             predicted_home_final_margin,
             confidence,
+            confidence_bucket,
             created_at_utc,
             explanation_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(game_live_id) DO NOTHING;
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """,
         (
-            game_id,
-            game_pk,
+            season_game_id,
+            game_live_id,
             season_year,
             season_id,
             baseline_prob,
-            halftime_margin,  # placeholder until margin model
-            margin_confidence_score,
-            now_iso,
-            json.dumps(json_explanation),
+            halftime_margin,
+            confidence,
+            bucket,
+            now_utc,
+            json.dumps(explanation),
         ),
     )
 
     conn.commit()
+
+
+    # Notify if confident
+    msg = build_halftime_message(
+        away_name=game.away_name,
+        home_name=game.home_name,
+        away_score=game.away_score,
+        home_score=game.home_score,
+        p_home=baseline_prob,
+        confidence_score=confidence,
+        confidence_bucket=bucket,
+        extra={"halftime_margin": halftime_margin},
+    )
+
+    notify_if_confident(
+        conn=conn,
+        alert_cfg=alert_config_from_env(),
+        confidence_score=confidence,
+        threshold=0.10,
+        message=msg,
+        metadata={
+            "game_id": game_live_id,
+            "season_year": season_year,
+        },
+    )

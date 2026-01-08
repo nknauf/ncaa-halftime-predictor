@@ -73,6 +73,7 @@ def games_live():
 
     rows = conn.execute("""
         SELECT
+            sg.game_id,
             dg.game_live_id,
             dg.status,
             dg.home_name,
@@ -86,14 +87,15 @@ def games_live():
             p.confidence_bucket,
             p.prediction_correct
         FROM daily_games dg
+        JOIN season_games sg
+            ON sg.game_live_id = dg.game_live_id
         LEFT JOIN predictions p
-            ON p.game_live_id = dg.game_live_id
+            ON p.game_id = sg.game_id
         WHERE dg.status != 'FINAL'
         ORDER BY dg.last_seen_utc DESC;
     """).fetchall()
 
     conn.close()
-
     return [dict(r) for r in rows]
 
 
@@ -101,7 +103,6 @@ def games_live():
 def games_recent():
     conn = connect(CONFIG.db_path)
 
-    # 1️⃣ Find most recent resolved prediction
     row = conn.execute("""
         SELECT resolved_at_utc
         FROM predictions
@@ -112,35 +113,31 @@ def games_recent():
 
     if not row:
         conn.close()
-        return []
+        return {"sports_day": None, "games": []}
 
     resolved_utc = datetime.fromisoformat(row["resolved_at_utc"])
-
     sports_day = sports_day_label(resolved_utc)
 
-    # 2️⃣ Fetch all FINAL games from that sports day
     rows = conn.execute("""
         SELECT
-            g.date AS sports_day,
-            dg.game_live_id,
+            sg.game_id,
+            sg.game_date AS sports_day,
             dg.home_name,
             dg.away_name,
-            dg.home_score,
-            dg.away_score,
-            dg.status,
+            sg.home_final_score,
+            sg.away_final_score,
 
             p.predicted_home_win_prob,
-            p.confidence,
             p.confidence_bucket,
             p.prediction_correct
-        FROM daily_games dg
+        FROM season_games sg
         JOIN predictions p
-            ON p.game_live_id = dg.game_live_id
-        JOIN games g
-            ON g.game_live_id = dg.game_live_id
-        WHERE dg.status = 'FINAL'
-          AND g.date = ?
-        ORDER BY dg.last_seen_utc DESC;
+            ON p.game_id = sg.game_id
+        LEFT JOIN daily_games dg
+            ON dg.game_live_id = sg.game_live_id
+        WHERE sg.status = 'FINAL'
+          AND sg.game_date = ?
+        ORDER BY sg.updated_at_utc DESC;
     """, (sports_day,)).fetchall()
 
     conn.close()
@@ -151,11 +148,11 @@ def games_recent():
     }
 
 
+
 @router.get("/games/season/{season_year}")
 def games_by_season(season_year: int):
     conn = connect(CONFIG.db_path)
 
-    # 1️⃣ Resolve season_id
     row = conn.execute(
         "SELECT season_id FROM seasons WHERE year = ?;",
         (season_year,)
@@ -171,29 +168,25 @@ def games_by_season(season_year: int):
 
     season_id = row["season_id"]
 
-    # 2️⃣ Fetch games + predictions
     rows = conn.execute("""
         SELECT
-            g.date,
-            g.game_id,
-            g.game_live_id,
+            sg.game_id,
+            sg.game_date,
+            sg.home_final_score,
+            sg.away_final_score,
 
             p.predicted_home_win_prob,
             p.confidence_bucket,
-            p.prediction_correct,
-
-            p.final_home_score,
-            p.final_away_score
-        FROM games g
-        JOIN predictions p
-            ON p.game_id = g.game_id
-        WHERE g.season_id = ?
-        ORDER BY g.date DESC;
+            p.prediction_correct
+        FROM season_games sg
+        LEFT JOIN predictions p
+            ON p.game_id = sg.game_id
+        WHERE sg.season_id = ?
+        ORDER BY sg.game_date DESC;
     """, (season_id,)).fetchall()
 
     games = [dict(r) for r in rows]
 
-    # 3️⃣ Compute record
     wins = sum(1 for g in games if g["prediction_correct"] == 1)
     losses = sum(1 for g in games if g["prediction_correct"] == 0)
     pending = sum(1 for g in games if g["prediction_correct"] is None)
@@ -215,37 +208,39 @@ def games_by_season(season_year: int):
     }
 
 
+
 @router.get("/games/{game_id}")
 def game_detail(game_id: int):
     conn = connect(CONFIG.db_path)
 
     row = conn.execute("""
         SELECT
-            g.game_id,
-            g.date,
-            g.game_live_id,
+            sg.game_id,
+            sg.game_date,
+            sg.status,
+            sg.home_final_score,
+            sg.away_final_score,
 
             dg.home_name,
             dg.away_name,
             dg.home_score AS current_home_score,
             dg.away_score AS current_away_score,
-            dg.status,
 
             p.predicted_home_win_prob,
             p.predicted_home_final_margin,
             p.confidence,
             p.confidence_bucket,
             p.prediction_correct,
-            p.final_home_score,
-            p.final_away_score,
             p.final_margin,
             p.created_at_utc,
             p.resolved_at_utc,
             p.explanation_json
-        FROM games g
-        JOIN predictions p ON p.game_id = g.game_id
-        LEFT JOIN daily_games dg ON dg.game_live_id = g.game_live_id
-        WHERE g.game_id = ?;
+        FROM season_games sg
+        LEFT JOIN daily_games dg
+            ON dg.game_live_id = sg.game_live_id
+        LEFT JOIN predictions p
+            ON p.game_id = sg.game_id
+        WHERE sg.game_id = ?;
     """, (game_id,)).fetchone()
 
     conn.close()
@@ -254,6 +249,7 @@ def game_detail(game_id: int):
         return {"error": "Game not found"}
 
     return dict(row)
+
 
 
 @router.get("/metrics/confidence")

@@ -6,10 +6,23 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import CONFIG
-from app.db_live import connect, ensure_live_schema, get_previous_status, halftime_event_exists, upsert_daily_game
+from app.db_live import (
+    connect,
+    ensure_daily_games_schema,
+    get_previous_status,
+    upsert_daily_game,
+    upsert_season_game_from_live,
+    get_or_create_season_id,
+    resolve_team_id_from_espn_name
+)
 from app.handle_halftime import handle_halftime
 from app.handle_final import handle_final
 from app.sources.espn import fetch_scoreboard
+
+from zoneinfo import ZoneInfo
+from datetime import timedelta
+
+ET = ZoneInfo("America/New_York")
 
 
 def parse_args():
@@ -21,37 +34,64 @@ def parse_args():
     return p.parse_args()
 
 
-def today_yyyymmdd() -> str:
-    return datetime.now().strftime("%Y%m%d")
+def current_sports_day_et():
+    now_utc = datetime.now(tz=ZoneInfo("UTC"))
+    return sports_day_et(now_utc)
 
 
-def today_yyyy_mm_dd() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+def scoreboard_date_param():
+    return current_sports_day_et().replace("-", "")
+
+
+def sports_day_et(now_utc: datetime) -> str:
+    now_et = now_utc.astimezone(ET)
+    # Sports day rolls over at 5am ET
+    if now_et.hour < 5:
+        sports_day = now_et.date() - timedelta(days=1)
+    else:
+        sports_day = now_et.date()
+
+    return sports_day.isoformat()
 
 
 def main():
     args = parse_args()
     db_path = Path(args.db)
 
-    date_param = args.date or today_yyyymmdd()
-    date_for_db = today_yyyy_mm_dd()
+    sports_day = args.date or current_sports_day_et()
+    date_param = sports_day.replace("-", "")
+
+    now_utc = datetime.now(tz=ZoneInfo("UTC"))
+
+    sports_today = sports_day_et(now_utc)
+    sports_yesterday = (datetime.fromisoformat(sports_today) - timedelta(days=1)).isoformat()
 
     conn = connect(db_path)
+    season_id = get_or_create_season_id(conn, args.season)
     try:
-        ensure_live_schema(conn)    # makes SQLite tables for live games and predictions
+        ensure_daily_games_schema(conn)
 
-
-        # Not deleteing daily games for the moment
-        # conn.execute(
-        #     "DELETE FROM daily_games WHERE date != ?;",
-        #     (date_for_db,)
-        # )
-        # conn.commit()
+        # filters daily_games to only include today and yesterday basketball games
+        conn.execute(
+            """
+            DELETE FROM daily_games
+            WHERE date NOT IN (?, ?);
+            """,
+            (sports_today, sports_yesterday)
+        )
+        conn.commit()
 
         print(f"Using DB: {db_path.resolve()}")
         print(f"Polling ESPN for date={date_param} every {args.interval}s (season={args.season})")
 
         while True:
+
+            new_sports_day = current_sports_day_et()
+            if new_sports_day != sports_day:
+                sports_day = new_sports_day
+                date_param = sports_day.replace("-", "")
+                print(f"[INFO] Sports day rolled over → {sports_day}")
+
             try:
                 games = fetch_scoreboard(CONFIG.espn_scoreboard_url, date_param)
             except Exception as e:
@@ -62,22 +102,33 @@ def main():
             for g in games:
 
                 # Fill date partition
-                g.date = date_for_db
+                g.date = sports_day
 
                 prev_status = get_previous_status(conn, g.game_live_id)
                 upsert_daily_game(conn, g)
                 conn.commit()
 
+                try:
+                    home_team_id = resolve_team_id_from_espn_name(conn, g.home_name)
+                    away_team_id = resolve_team_id_from_espn_name(conn, g.away_name)
+                except KeyError as e:
+                    print(f"[TEAM MAP MISSING] {e} — skipping game {g.game_live_id}")
+                    continue
+
+                game_pk = upsert_season_game_from_live (
+                    conn=conn,
+                    season_id=season_id,
+                    g=g,
+                    home_team_id=home_team_id,
+                    away_team_id=away_team_id
+                )
+
                 # Transition logic
                 if g.status == "HALFTIME" and prev_status != "HALFTIME":
-                    # Avoid duplicates even if we restart the poller
-                    if halftime_event_exists(conn, g.game_live_id):
-                        continue
-
-                    # We only have halftime score if ESPN is providing current score at halftime
+        
                     if g.home_score is None or g.away_score is None:
                         print(f"[HALFTIME] Missing scores, skipping: {g.away_name} @ {g.home_name} ({g.game_live_id})")
-                        continue
+                        continue    
 
                     handle_halftime(conn, g, args.season)
 

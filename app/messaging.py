@@ -161,3 +161,23 @@ def notify_if_confident(
             print(f"[SMS ERROR] {phone}: {e}")
 
     return True
+
+@dataclass(frozen=True)
+class TwilioConfig:
+    account_sid: str
+    auth_token: str
+    from_number: str
+
+def require_twilio(cfg: AlertConfig) -> TwilioConfig:
+    if not cfg.twilio_account_sid:
+        raise RuntimeError("Missing TWILIO_ACCOUNT_SID")
+    if not cfg.twilio_auth_token:
+        raise RuntimeError("Missing TWILIO_AUTH_TOKEN")
+    if not cfg.twilio_from_number:
+        raise RuntimeError("Missing TWILIO_FROM_NUMBER")
+
+    return TwilioConfig(
+        account_sid=cfg.twilio_account_sid,
+        auth_token=cfg.twilio_auth_token,
+        from_number=cfg.twilio_from_number,
+    )

@@ -2,31 +2,36 @@
 
 import sqlite3
 from datetime import datetime, timezone
-
+from app.db_live import set_season_game_final
 
 def handle_final(conn: sqlite3.Connection, game):
     """
     Resolve a prediction once a game reaches FINAL.
 
-    Updates predictions with:
-    - final_home_score
-    - final_away_score
-    - final_margin
-    - home_win
-    - prediction_correct
-    - confidence_bucket
-    - resolved_at_utc
+   Responsibilities:
+    1. Finalize season_games (scores + status)
+    2. Resolve prediction correctness
 
     Idempotent: safe to call multiple times.
     """
 
     cursor = conn.cursor()
-    game_id = game.game_live_id
+    game_live_id = game.game_live_id
 
-    # ---------------------------------------------------------
-    # 1. Ensure we even have a prediction to resolve
-    # ---------------------------------------------------------
-    cursor.execute(
+    if game.home_score is None or game.away_score is None:
+        print(f"[FINAL] Missing final scores for {game_live_id}")
+        return
+
+    # Finalize season_games (always safe)
+    set_season_game_final(
+        conn=conn,
+        game_live_id=game_live_id,
+        home=game.home_score,
+        away=game.away_score,
+    )
+
+    # Ensure we even have a prediction to resolve
+    row = cursor.execute(
         """
         SELECT
             predicted_home_win_prob,
@@ -35,9 +40,8 @@ def handle_final(conn: sqlite3.Connection, game):
         FROM predictions
         WHERE game_live_id = ?;
         """,
-        (game_id,),
-    )
-    row = cursor.fetchone()
+        (game_live_id,),
+    ).fetchone()
 
     if not row:
         # No halftime prediction was made
@@ -47,13 +51,6 @@ def handle_final(conn: sqlite3.Connection, game):
 
     # Already resolved
     if resolved_at is not None:
-        return
-
-    # ---------------------------------------------------------
-    # 2. Validate final scores
-    # ---------------------------------------------------------
-    if game.home_score is None or game.away_score is None:
-        print(f"[FINAL] Missing final scores for {game_id}")
         return
 
     final_home = game.home_score
@@ -104,7 +101,7 @@ def handle_final(conn: sqlite3.Connection, game):
             prediction_correct,
             confidence_bucket,
             resolved_at_utc,
-            game_id,
+            game_live_id,
         ),
     )
 

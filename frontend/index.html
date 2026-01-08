@@ -43,7 +43,7 @@
 <p class="sub">Live model output & historical performance</p>
 
 <!-- ========================= -->
-<!-- Overall Metrics -->
+<!-- Overall Model Accuracy Stats -->
 <!-- ========================= -->
 <div class="cards">
   <div class="card" id="overallCard">
@@ -63,12 +63,13 @@
       <th>Game</th>
       <th>Score</th>
       <th>Status</th>
+      <th>Start</th>
       <th>Home Win %</th>
       <th>Confidence</th>
     </tr>
   </thead>
   <tbody>
-    <tr><td colspan="5">Loading…</td></tr>
+    <tr><td colspan="6">Loading…</td></tr>
   </tbody>
 </table>
 
@@ -91,6 +92,16 @@
 </table>
 
 <script>
+
+/* ---------------------------
+   Helpers
+--------------------------- */
+function formatTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 /* ---------------------------
    Metrics
 --------------------------- */
@@ -103,7 +114,7 @@ async function loadOverallMetrics() {
     const res = await fetch("/metrics/overall");
     const m = await res.json();
 
-    value.textContent = `${m.wins}–${m.losses}`;
+    value.textContent = `${m.wins}-${m.losses}`;
     muted.textContent = m.accuracy !== null
       ? `Accuracy: ${(m.accuracy * 100).toFixed(1)}%`
       : "Accuracy: —";
@@ -129,15 +140,19 @@ async function loadLiveGames() {
   }
 
   for (const g of games) {
-    const confClass =
-      g.confidence >= 0.2 ? "high" :
-      g.confidence >= 0.1 ? "medium" : "low";
+    let confClass = "pending";
+    if (g.confidence !== null) {
+      confClass =
+        g.confidence >= 0.2 ? "high" :
+        g.confidence >= 0.1 ? "medium" : "low";
+    }
 
     const row = document.createElement("tr");
     row.innerHTML = `
       <td>${g.away_name} @ ${g.home_name}</td>
-      <td>${g.away_score ?? "-"} – ${g.home_score ?? "-"}</td>
+      <td>${g.away_score} - ${g.home_score}</td>
       <td>${g.status}</td>
+      <td>${formatTime(g.start_time_utc)}</td>
       <td>${g.predicted_home_win_prob !== null ? (g.predicted_home_win_prob * 100).toFixed(1) + "%" : "—"}</td>
       <td class="${confClass}">${g.confidence !== null ? g.confidence.toFixed(3) : "—"}</td>
     `;
@@ -172,7 +187,7 @@ async function loadRecentGames() {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td>${g.away_name} @ ${g.home_name}</td>
-      <td>${g.away_score} – ${g.home_score}</td>
+      <td>${g.away_final_score} - ${g.home_final_score}</td>
       <td>${(g.predicted_home_win_prob * 100).toFixed(1)}%</td>
       <td class="${resultClass}">${resultText}</td>
     `;

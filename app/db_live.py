@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 import json
+from team_mapping_static import get_sports_reference_name
 
 
 @dataclass
@@ -32,7 +33,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
-def ensure_live_schema(conn: sqlite3.Connection):
+def ensure_daily_games_schema(conn: sqlite3.Connection):
     # NOTE: these tables are independent of your historical schema.
     conn.executescript(
         """
@@ -52,49 +53,6 @@ def ensure_live_schema(conn: sqlite3.Connection):
             away_score         INTEGER,
 
             last_seen_utc      TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS halftime_events (
-            game_live_id       TEXT PRIMARY KEY,
-            date               TEXT NOT NULL,
-            season_year        INTEGER NOT NULL,
-
-            home_halftime      INTEGER NOT NULL,
-            away_halftime      INTEGER NOT NULL,
-
-            -- NEW: canonical resolution results (nullable until mapped)
-            home_team_id       INTEGER,
-            away_team_id       INTEGER,
-            alias_source       TEXT,
-
-            -- NEW: raw halftime stats (JSON text)
-            halftime_stats_json TEXT,
-
-            captured_at_utc    TEXT NOT NULL
-        );
-
-        -- NEW: deterministic alias mapping
-        CREATE TABLE IF NOT EXISTS team_aliases (
-            alias_source       TEXT NOT NULL,
-            alias_name         TEXT NOT NULL,    -- normalized
-            team_id            INTEGER NOT NULL,
-            mapping_source     TEXT DEFAULT 'manual',
-            created_at_utc     TEXT NOT NULL,
-            updated_at_utc     TEXT NOT NULL,
-            PRIMARY KEY (alias_source, alias_name)
-        );
-
-        CREATE TABLE IF NOT EXISTS predictions (
-            game_live_id                TEXT PRIMARY KEY,
-            season_year                 INTEGER NOT NULL,
-
-            predicted_home_win_prob     REAL NOT NULL,
-            predicted_home_final_margin REAL,
-
-            confidence                  REAL,
-            explanation_json            TEXT,
-
-            created_at_utc              TEXT NOT NULL
         );
         """
     )
@@ -152,52 +110,90 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def halftime_event_exists(conn: sqlite3.Connection, game_live_id: str) -> bool:
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM halftime_events WHERE game_live_id = ?", (game_live_id,))
-    return cur.fetchone() is not None
+# def insert_prediction(
+#     conn: sqlite3.Connection,
+#     game_live_id: str,
+#     predicted_home_win_prob: float,
+#     confidence: float,
+#     created_at_utc: str,
+#     explanation_json: dict,
+# ) -> None:
+#     conn.execute(
+#         """
+#         INSERT INTO predictions
+#         (game_live_id, predicted_home_win_prob, confidence, created_at_utc, explanation_json)
+#         VALUES (?, ?, ?, ?, ?)
+#         """,
+#         (
+#             game_live_id,
+#             predicted_home_win_prob,
+#             confidence,
+#             created_at_utc,
+#             json.dumps(explanation_json),
+#         ),
+#     )
 
-
-def insert_halftime_event(
+def upsert_season_game_from_live(
     conn: sqlite3.Connection,
-    game_live_id: str,
-    home_halftime: int,
-    away_halftime: int,
-    season_year: int,
-    captured_at_utc: str,
-) -> None:
+    season_id: int,
+    g: LiveGame,
+    home_team_id: Optional[int],
+    away_team_id: Optional[int],
+) -> int:
+    """
+    Returns season_games.game_id (PK).
+    """
+    now = utc_now_iso()
+
     conn.execute(
         """
-        INSERT INTO halftime_events
-        (game_live_id, home_halftime, away_halftime, season_year, captured_at_utc)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (game_live_id, home_halftime, away_halftime, season_year, captured_at_utc),
-    )
-
-
-def insert_prediction(
-    conn: sqlite3.Connection,
-    game_live_id: str,
-    predicted_home_win_prob: float,
-    confidence: float,
-    created_at_utc: str,
-    explanation_json: dict,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO predictions
-        (game_live_id, predicted_home_win_prob, confidence, created_at_utc, explanation_json)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO season_games (
+            season_id, game_live_id, game_date, start_time_utc,
+            home_team_id, away_team_id,
+            status, created_at_utc, updated_at_utc
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_live_id) DO UPDATE SET
+            game_date = excluded.game_date,
+            start_time_utc = excluded.start_time_utc,
+            status = excluded.status,
+            updated_at_utc = excluded.updated_at_utc
+        ;
         """,
         (
-            game_live_id,
-            predicted_home_win_prob,
-            confidence,
-            created_at_utc,
-            json.dumps(explanation_json),
+            season_id,
+            g.game_live_id,
+            g.date,
+            g.start_time_utc,
+            home_team_id,
+            away_team_id,
+            g.status,
+            now,
+            now,
         ),
     )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT game_id FROM season_games WHERE game_live_id = ?;",
+        (g.game_live_id,),
+    ).fetchone()
+    return int(row["game_id"])
+
+
+def set_season_game_final(conn: sqlite3.Connection, game_live_id: str, home: int, away: int):
+    now = utc_now_iso()
+    conn.execute(
+        """
+        UPDATE season_games
+        SET home_final_score = ?, away_final_score = ?, status = 'FINAL', updated_at_utc = ?
+        WHERE game_live_id = ?;
+        """,
+        (home, away, now, game_live_id),
+    )
+    conn.commit()
+
+
 
 def get_team_id_from_alias(conn: sqlite3.Connection, alias_source: str, alias_name: str):
     cur = conn.cursor()
@@ -217,13 +213,52 @@ def upsert_team_alias(
     now = utc_now_iso()
     conn.execute(
         """
-        INSERT INTO team_aliases (alias_source, alias_name, team_id, source, created_at_utc, updated_at_utc)
+        INSERT INTO team_aliases (alias_source, alias_name, team_id, mapping_source, created_at_utc, updated_at_utc)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(alias_source, alias_name) DO UPDATE SET
             team_id = excluded.team_id,
-            source = excluded.source,
+            mapping_source = excluded.mapping_source,
             updated_at_utc = excluded.updated_at_utc
         """,
         (alias_source, alias_name, team_id, source, now, now),
     )
     conn.commit()
+
+
+def get_or_create_season_id(conn: sqlite3.Connection, season_year: int) -> int:
+    row = conn.execute("SELECT season_id FROM seasons WHERE year = ?;", (season_year,)).fetchone()
+    if row:
+        return int(row["season_id"])
+    cur = conn.execute("INSERT INTO seasons (year) VALUES (?);", (season_year,))
+    conn.commit()
+
+    lastrowid = cur.lastrowid
+    if lastrowid is None:
+        # This should never happen for a normal INSERT, so fail loudly.
+        raise RuntimeError("Expected lastrowid after INSERT into seasons, got None")
+    
+    return int(lastrowid)
+
+def resolve_team_id_from_espn_name(
+    conn: sqlite3.Connection,
+    espn_display_name: str,
+) -> int:
+    """
+    Resolve internal team_id using ESPN displayName → sportsref_id mapping.
+    Raises if unmapped (intentional).
+    """
+    sportsref_id = get_sports_reference_name(espn_display_name)
+
+    row = conn.execute(
+        """
+        SELECT team_id
+        FROM teams
+        WHERE sportsref_id = ?;
+        """,
+        (sportsref_id,),
+    ).fetchone()
+
+    if not row:
+        raise RuntimeError(f"SportsRef team not found: {sportsref_id}")
+
+    return int(row["team_id"])

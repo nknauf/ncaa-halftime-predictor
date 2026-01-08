@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-
+from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Config:
@@ -20,6 +20,8 @@ class Config:
     # Basic run settings
     # NOTE: your "season_year" here is just metadata for events.
     season_year: int = 2025  # set per run, can override via CLI later
+
+    load_dotenv()
 
 
 CONFIG = Config()

@@ -1,20 +1,15 @@
-import os
-from twilio.rest import Client
+from app.messaging import alert_config_from_env, send_sms, require_twilio
+from dotenv import load_dotenv
 
-def main():
-    sid = os.environ["TWILIO_ACCOUNT_SID"]
-    token = os.environ["TWILIO_AUTH_TOKEN"]
-    from_num = os.environ["TWILIO_FROM_NUMBER"]
+load_dotenv()
 
-    to_num = input("Enter your phone number, ex.(+1...): ").strip()
-    client = Client(sid, token)
+cfg = alert_config_from_env()
+twilio = require_twilio(cfg)
 
-    msg = client.messages.create(
-        from_=from_num,
-        to=to_num,
-        body="Twilio test: your SMS pipeline is working ✅",
-    )
-    print("Sent. SID:", msg.sid)
-
-if __name__ == "__main__":
-    main()
+send_sms(
+    account_sid=twilio.account_sid,
+    auth_token=twilio.auth_token,
+    from_number=twilio.from_number,
+    to_number="+17326065457",
+    body="✅ Test message from NCAA Halftime Predictor"
+)
